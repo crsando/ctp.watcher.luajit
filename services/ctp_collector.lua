@@ -6,10 +6,20 @@ local service = require "lservice3" .input(...)
 local config = service.config; do 
         -- config.server = { front_addr =  "tcp://180.169.75.18:61213", broker = "7090", user = "85506493" }
         assert(config.server, "no config.server")
+        config.auto_disconnect = true
     end
 
 local S = {}
 local collector = ctp.new_collector(config.server)
+
+if config.auto_disconnect then 
+    local myid = service.get_id()
+    scheduler:daily("08:45:00", function() service.send(myid, "start") end)
+    scheduler:daily("17:00:00", function() service.send(myid, "stop") end)
+    scheduler:daily("20:45:00", function() service.send(myid, "start") end)
+    scheduler:daily("04:00:00", function() service.send(myid, "stop") end)
+end
+
 
 function S.start()
     ctp.log_debug("is_ready: %s", collector:is_ready() and "true" or "false")
@@ -64,7 +74,6 @@ end
 local function on_tick(tick)
     ctp.log_debug("on_tick | %s | %f", tick.InstrumentID, tick.LastPrice)
     service.send("db_writer", "on_tick", tick)
-    -- print("on_tick", inspect(tick))
 end
 
 function service.on_idle()

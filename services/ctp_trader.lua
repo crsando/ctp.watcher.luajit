@@ -2,28 +2,23 @@ local inspect = require "inspect"
 local ctp = require "lctp2"
 ctp.log_set_level("LOG_DEBUG")
 
-
 -- 我自己的库，帮我解决一些编码问题
 local iconv = require "iconv"
-
 local cv, err = iconv.open("UTF-8", "GB18030") -- to, from
 
---[[
-
-***TODO***
-- 修改一下 query_position 的返回值，使得该值可以更好被后续策略和监控所使用？
-
-]]
-
 local service = require "lservice3" .input(...)
+local scheduler = require "lservice3.scheduler"
+local uv = service.uv
 local config = service.config; do 
         assert(config.server, "no config.server")
+        config.auto_disconnect = true
     end
 
 -- read only: 只允许query, 禁止所有 order
 local _read_only = config.read_only or true
 
 local function slice(t, k)
+    if not t then return nil end
     local o = {}
     for i, e in ipairs(t) do 
         o[i] = e[k]
@@ -46,9 +41,21 @@ local server, trader; do
         :async(service.get_async())
 end
 
+if config.auto_disconnect then 
+    local myid = service.get_id()
+    scheduler:daily("08:45:00", function() service.send(myid, "start") end)
+    scheduler:daily("17:00:00", function() service.send(myid, "stop") end)
+    scheduler:daily("20:45:00", function() service.send(myid, "start") end)
+    scheduler:daily("04:00:00", function() service.send(myid, "stop") end)
+end
 
 function S.start()
     trader:start( true ) -- blocking thread until settlement
+    return true
+end
+
+function S.stop()
+    trader:stop()
     return true
 end
 
@@ -60,6 +67,9 @@ local query = {
     start_index = 1,
     last_index = 0,
     max_length = 100,
+
+    timer = uv.new_timer(),
+    timer_wall_ms = nil,
     
     reorder = function(self)
             local s, e = self.start_index, self.last_index
@@ -85,42 +95,63 @@ local query = {
     -- 此时，在query:request()中，收到的是两个，一个ok/err，一个rst，后者rst是所有OnRspXXX的结果的一个table。
     -- 
     request = function(self, name, ...)
+            local co = service.get_session()
+
             local entity = {
-                    session = service.get_session(),
+                    session = co,
                     req_id = nil,
                     name = name,
                     body = {...},
                     cache = {},
                 }
 
+            -- 注意：我们这里永远只是enqueue，我们并不会在这里立即处理
+            -- 所有的处理在on_idle里头进行流量控制
             self:enqueue(entity)
+
+            -- 这个process本质是在维护一个timer
+            -- 如果query中有东西，那么每隔interval_ms就执行一次
+            -- 否则就停止timer
+            -- 此处的目的是如果还有东西的话，保证timer会继续执行下去
             self:process()
 
-            local err, rst = coroutine.yield() -- wait for response
+            -- request 的硬性约束：一个request最多接受等待10秒，否则强制结束，避免让一个session一直挂在那里
+            scheduler:at(os.time() + 10, function()
+                    service.resume_session(co, "timedout")
+                end)
+
+            local err, rst = coroutine.yield_session()
+
+            if err == "timedout" then 
+                return nil, "timedout"
+            end
+
+            -- 
+            -- 正常来说，这里是由 query:response() 完成 resume
+            --
+            -- local err, rst = coroutine.yield() -- wait for response
+            local err, rst = coroutine.yield_session()
 
             --
             -- 现在的策略是：把rst进行一些处理后再返回
             -- 由于rst这里其实是包含了各种rsp_info, req_id之类的东西的，所以我们需要去除，只保留field
             --
             local body = slice(rst, "field")
-            -- 需要自己决定是否只取第一个返回结果
-            --[[
-            if #body == 1 then 
-                body = body[1]
-            end
-            ]]
 
+            -- 需要自己决定是否只取第一个返回结果
             return err, body
         end,
+
     -- exit point
     response = function(self)
             local q = self:first()
             if q then 
+                self:dequeue()
                 if q.session then 
                     -- err: 0, no error
+                    -- ctp.log_debug("resume session %s", inspect(q))
                     service.resume_session(q.session, 0, q.cache)
                 end
-                self:dequeue()
             end
         end,
 
@@ -140,10 +171,12 @@ local query = {
                 self[self.last_index] = entity
             end
         end,
+
     dequeue = function(self)
             self[self.start_index] = nil 
             self.start_index = self.start_index + 1
         end,
+
     first = function(self)
             if self.last_index >= self.start_index then 
                 return self[self.start_index]
@@ -154,23 +187,56 @@ local query = {
 
     -- send the real ctp request/query by trader
     process = function(self)
-            local q = self:first()
-            if q and (not q.req_id) then 
-                local f = trader[q.name]
+            -- 两次查询之间的最小间隔
+            local interval_ms = 1000
 
-                if not f then 
-                    return 0, "no matched query name"
+            local function get_current_ms()
+                local tv = uv.gettimeofday()
+                -- sec 是秒，usec 是微秒
+                return tv.sec * 1000 + math.floor(tv.usec / 1000)
+            end
+
+            local function process_step() 
+                -- 我们在这里强制检查
+                -- 若trader尚未ready，什么都不做，继续保留在其中
+                if not trader:is_ready() then return 0 end
+                local q = self:first()
+                if q and (not q.req_id) then 
+                    local f = trader[q.name]
+
+                    if not f then 
+                        return 0, "no matched query name"
+                    end
+
+                    -- 设置下一次query的最小时间戳，当前时间+1s
+                    self.timer_wall_ms = get_current_ms() + interval_ms
+                    local ok, req_id = pcall(f, trader, unpack(q.body))
+                    q.req_id = req_id
+
+                    return 1 -- did something
+                else 
+                    return 0 -- did nothing
                 end
+            end
 
-                local req_id = f(trader, unpack(q.body))
-                q.req_id = req_id
-
-                return 1 -- did something
-            else 
-                return 0 -- did nothing
+            if not self.timer:is_active() then 
+                local curr_ms = get_current_ms()
+                local delta_ms; do 
+                        delta_ms = (self.timer_wall_ms or curr_ms) - curr_ms
+                        delta_ms = (delta_ms > 0) and delta_ms or 0
+                    end
+                
+                self.timer:start(delta_ms, diff_ms, function()
+                        if not self:first() then 
+                            self.timer:stop()
+                        else 
+                            process_step()
+                        end
+                    end)
             end
         end,
 
+    -- 当我们从Trader接收到OnRspXXX这类消息的时候，Update对应的Request Cache，如果is_last，则self:response完成一个request的处理。
     update = function (self, rsp)
             local q = self:first()
 
@@ -190,7 +256,7 @@ local query = {
             -- finish query
             if rsp.is_last == true then 
                 self:response()
-                self:process() -- process next request
+                -- self:process() -- process next request
             end
         end,
 } -- end query object definitions
@@ -222,25 +288,6 @@ end
 function S.query_position()
     local err, rst = query:request("query_position")
     return rst
-
-    --[[
-    local pt = {}
-    for _, field in ipairs(rst) do 
-        if (field ~= nil) and (field.InstrumentID) then 
-            local symbol = field.InstrumentID
-            pt[symbol] = pt[symbol] or {}
-            entry = pt[symbol]
-            direction = field.PosiDirection - 49 -- an hack
-            entry[direction] = (entry[direction] or 0) + field.Position
-
-            ctp.log_debug(">>> %s \t %s \t %d", symbol, direction, field.Position)
-        end
-    end
-
-    -- position_table = pt -- update global variable
-
-    return slice(rst, "field")
-    ]]
 end
 
 function S.query_instrument_margin_rate(symbol)
@@ -253,14 +300,16 @@ function S.query_instrument_margin_rate(symbol)
 end
 
 function S.query_instrument(symbol)
+    ctp.log_debug("S.query_instrument | %s", symbol)
     symbol = symbol or ""
 
     local ok, rst = query:request("query_instrument", symbol)
 
+    if not rst then return nil end
+
     -- 由于当前我们只关心期货数据，不关心期权，所以这里做一个非常简单的过滤
     local info = {}; do 
         for _, entry in ipairs(rst) do 
-            -- Futures Only
             if entry.ProductClass == ctp.THOST_FTDC_PC_Futures then 
                 entry.InstrumentName = cv and cv:convert(entry.InstrumentName) or "" -- workaround for gbk bug
                 table.insert(info ,entry)
@@ -269,9 +318,9 @@ function S.query_instrument(symbol)
     end
 
     if symbol == "" then 
-        return info
+        return rst
     else 
-        return (info and info[1] or {})
+        return (rst and rst[1] or {})
     end
 end
 
@@ -513,6 +562,26 @@ function R.OnRtnOrder(rsp) order:update(rsp) end
 function R.OnRtnTrade(rsp) order:update(rsp) end
 function R.OnRspOrderAction(rsp) order:update(rsp) end
 
+-- Handle Error
+function R.OnRspError(rsp)
+    if rsp and rsp.rsp_info then 
+        rsp.rsp_info.ErrorMsg  = cv:convert(rsp.rsp_info.ErrorMsg) or ""
+    end
+    ctp.log_debug("R.OnRspError: %s", inspect(rsp))
+    -- ctp.log_debug("Current Request: %s", inspect(query:first()))
+
+    query:update(rsp)
+
+    --[[
+    ctp.log_debug("R.OnRspError : %d | ErrorID %d | ErrorMsg: %s", 
+        (rsp and rsp.req_id or 0), 
+        (rsp and rsp.rsp_info.ErrorID or 0),
+        (cv:convert(rsp.rsp_info.ErrorMsg) or "")
+    )
+        ]]
+
+end
+
 -- 这只在报单异常时才会出现
 function R.OnRspOrderInsert(rsp)
     -- 这个巨坑，我们手动补几个字段 
@@ -536,6 +605,7 @@ end
 -- main loop
 -- process trader internal messages
 function service.on_idle()
+    -- process trader messages
     while true do 
         local rsp = trader:recv(false) -- non-blocking
         if rsp then 
