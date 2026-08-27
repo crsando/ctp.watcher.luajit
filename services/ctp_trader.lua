@@ -320,6 +320,8 @@ function S.query_instrument(symbol)
         end
     end
 
+    rst = info
+
     if symbol == "" then 
         return rst
     else 
