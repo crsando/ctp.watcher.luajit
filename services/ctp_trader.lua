@@ -17,6 +17,9 @@ local config = service.config; do
 -- read only: 只允许query, 禁止所有 order
 local _read_only = config.read_only or true
 
+
+
+
 local function slice(t, k)
     if not t then return nil end
     local o = {}
@@ -120,17 +123,17 @@ local query = {
                     service.resume_session(co, "timedout")
                 end)
 
-            local err, rst = coroutine.yield_session()
+            -- 
+            -- 正常来说，这里是由 query:response() 完成 resume
+            --
+            -- local err, rst = coroutine.yield() -- wait for response
+            local err, rst = service.yield_session()
 
             if err == "timedout" then 
                 return nil, "timedout"
             end
 
-            -- 
-            -- 正常来说，这里是由 query:response() 完成 resume
-            --
-            -- local err, rst = coroutine.yield() -- wait for response
-            local err, rst = coroutine.yield_session()
+            -- 正常返回值的处理
 
             --
             -- 现在的策略是：把rst进行一些处理后再返回
@@ -191,9 +194,9 @@ local query = {
             local interval_ms = 1000
 
             local function get_current_ms()
-                local tv = uv.gettimeofday()
+                local sec, usec = uv.gettimeofday()
                 -- sec 是秒，usec 是微秒
-                return tv.sec * 1000 + math.floor(tv.usec / 1000)
+                return sec * 1000 + math.floor(usec / 1000)
             end
 
             local function process_step() 
@@ -226,7 +229,7 @@ local query = {
                         delta_ms = (delta_ms > 0) and delta_ms or 0
                     end
                 
-                self.timer:start(delta_ms, diff_ms, function()
+                self.timer:start(delta_ms, interval_ms, function()
                         if not self:first() then 
                             self.timer:stop()
                         else 
