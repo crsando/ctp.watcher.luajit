@@ -13,9 +13,6 @@ local config = service.config; do
 local S = {}
 local collector = ctp.new_collector(config.server)
 
-
-
-
 function S.start()
     ctp.log_debug("is_ready: %s", collector:is_ready() and "true" or "false")
     collector:async(service.get_async())

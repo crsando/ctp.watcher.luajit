@@ -17,9 +17,6 @@ local config = service.config; do
 -- read only: 只允许query, 禁止所有 order
 local _read_only = config.read_only or true
 
-
-
-
 local function slice(t, k)
     if not t then return nil end
     local o = {}
@@ -42,14 +39,6 @@ local server, trader; do
     server = config.server
     trader = ctp.new_trader(server)
         :async(service.get_async())
-end
-
-if config.auto_disconnect then 
-    local myid = service.get_id()
-    scheduler:daily("08:45:00", function() service.send(myid, "start") end)
-    scheduler:daily("17:00:00", function() service.send(myid, "stop") end)
-    scheduler:daily("20:45:00", function() service.send(myid, "start") end)
-    scheduler:daily("04:00:00", function() service.send(myid, "stop") end)
 end
 
 function S.start()
