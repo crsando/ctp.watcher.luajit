@@ -51,6 +51,8 @@ function S.boot()
     service.spawn { name = "trader", source = "@services/ctp_trader.lua", config = {
             server = accounts["trader"]["gtja-3"],
         } }
+
+    service.call(service.get_id(), "start_all")
 end
 
 function S.start_all()
