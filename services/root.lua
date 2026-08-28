@@ -1,8 +1,17 @@
 local inspect = require "inspect"
 local service = require "lservice3".input(...)
+local scheduler = require "lservice3.scheduler"
 local config = service.config
 local ctp = require "lctp2"
 local cjson = require "cjson.safe"
+
+do
+    local myid = service.get_id()
+    scheduler:daily("08:45:00", function() service.send(myid, "start_all") end)
+    scheduler:daily("15:45:00", function() service.send(myid, "stop_all") end)
+    scheduler:daily("20:45:00", function() service.send(myid, "start_all") end)
+    scheduler:daily("04:00:00", function() service.send(myid, "stop_all") end)
+end
 
 local S = {}
 
@@ -39,12 +48,14 @@ function S.boot()
             symbol = symbol
         } }
 
-    service.call("collector", "start")
-
     service.spawn { name = "trader", source = "@services/ctp_trader.lua", config = {
             server = accounts["trader"]["gtja-3"],
         } }
-    local rsp = service.call("trader", "start") -- blocking, until trader starts
+end
+
+function S.start_all()
+    service.call("trader", "start")
+    service.call("collector", "start")
 
     local instruments = service.call("trader", "query_instrument")
 
@@ -68,6 +79,10 @@ function S.boot()
     end -- end subscribe
 end
 
+function S.stop_all()
+    service.call("trader", "stop")
+    service.call("collector", "stop")
+end
 
 function S.quit()
     ctp.log_debug("root is quiting")

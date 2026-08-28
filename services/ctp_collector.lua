@@ -13,13 +13,7 @@ local config = service.config; do
 local S = {}
 local collector = ctp.new_collector(config.server)
 
-if config.auto_disconnect then 
-    local myid = service.get_id()
-    scheduler:daily("08:45:00", function() service.send(myid, "start") end)
-    scheduler:daily("15:45:00", function() service.send(myid, "stop") end)
-    scheduler:daily("20:45:00", function() service.send(myid, "start") end)
-    scheduler:daily("04:00:00", function() service.send(myid, "stop") end)
-end
+
 
 
 function S.start()
