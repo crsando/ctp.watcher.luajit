@@ -4,7 +4,7 @@ local service = require "lservice3".input(...)
 local config = service.config or {}
 
 local TABLE_NAME = "ctp_tmp"
-local QUESTDB_CONF = config.questdb_conf or "http::addr=192.168.5.12:9000;"
+local QUESTDB_CONF = config.questdb_conf or "http::addr=192.168.5.13:9000;"
 
 local sender, sender_err = qdb.sender { conf = QUESTDB_CONF }
 assert(sender, "failed to connect to QuestDB: " .. tostring(sender_err))
