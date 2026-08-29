@@ -29,10 +29,6 @@ function S.start()
     end
 
     -- 连接成功后再subscribe
-    if config.symbol then 
-        collector:subscribe { config.symbol }
-    end
-
     return 1
 end
 
