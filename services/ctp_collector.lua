@@ -36,6 +36,11 @@ function S.start()
     return 1
 end
 
+function S.stop()
+    ctp.log_debug("S.stop | is_ready: %s", collector:is_ready() and "true" or "false")
+    collector:stop()
+end
+
 function S.quit()
     service.quit()
 end
