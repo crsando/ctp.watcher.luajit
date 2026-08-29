@@ -1,5 +1,5 @@
 local inspect = require "inspect"
-local service = require "lservice3"
+local service = require "service"
 
 local root_addr = service.new { 
     source = "@services/root.lua",

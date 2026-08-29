@@ -1,6 +1,6 @@
 local inspect = require "inspect"
-local service = require "lservice3".input(...)
-local scheduler = require "lservice3.scheduler"
+local service = require "service"
+local scheduler = require "service.scheduler"
 local config = service.config
 local ctp = require "lctp2"
 local cjson = require "cjson.safe"
@@ -44,20 +44,22 @@ function S.boot()
     service.spawn { name = "db_writer", source = "@services/db_writer.lua", config = {} }
 
     service.spawn { name = "collector", source = "@services/ctp_collector.lua", config = { 
-            server = accounts["collector"]["gtja-3"],
+            -- server = accounts["collector"]["gtja-3"],
+            server = accounts["collector"]["openctp-7x24"],
             symbol = symbol
         } }
 
     service.spawn { name = "trader", source = "@services/ctp_trader.lua", config = {
-            server = accounts["trader"]["gtja-3"],
+            -- server = accounts["trader"]["gtja-3"],
+            server = accounts["trader"]["openctp-7x24"],
         } }
 
     service.call(service.get_id(), "start_all")
 end
 
 function S.start_all()
-    service.call("trader", "start")
     service.call("collector", "start")
+    service.call("trader", "start")
 
     local instruments = service.call("trader", "query_instrument")
 

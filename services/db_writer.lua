@@ -1,6 +1,6 @@
 -- questdb.luajit is kept as a source dependency in ~/src.
 local qdb = require "questdb"
-local service = require "lservice3".input(...)
+local service = require "service"
 local config = service.config or {}
 
 local TABLE_NAME = "ctp_tmp"
