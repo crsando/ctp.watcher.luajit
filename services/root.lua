@@ -44,14 +44,14 @@ function S.boot()
     service.spawn { name = "db_writer", source = "@services/db_writer.lua", config = {} }
 
     service.spawn { name = "collector", source = "@services/ctp_collector.lua", config = { 
-            -- server = accounts["collector"]["gtja-3"],
-            server = accounts["collector"]["openctp-7x24"],
+            server = accounts["collector"]["gtja-3"],
+            -- server = accounts["collector"]["openctp-7x24"],
             symbol = symbol
         } }
 
     service.spawn { name = "trader", source = "@services/ctp_trader.lua", config = {
-            -- server = accounts["trader"]["gtja-3"],
-            server = accounts["trader"]["openctp-7x24"],
+            server = accounts["trader"]["gtja-3"],
+            -- server = accounts["trader"]["openctp-7x24"],
         } }
 
     service.call(service.get_id(), "start_all")
